@@ -136,8 +136,8 @@ unwinding comes with `.eh_frame` support.
 
 Native code generation includes:
 - Standard `#[panic_handler]` lowering to `panic_impl` symbol exports.
-- Compiler intrinsics expanded inline (`size_of`, `align_of`, `transmute`, `abort`, `unreachable`,
-  `caller_location`, `ptr_metadata`).
+- Compiler intrinsics expanded inline (`size_of`, `align_of`, `transmute`, `black_box`, `likely`,
+  `unlikely`, `abort`, `unreachable`, `caller_location`, `ptr_metadata`).
 - Direct ELF object file generation with proper symbol tables, relocations, and string deduplication in rodata.
 - Executables run natively on Linux x86-64 without requiring an external runtime.
 

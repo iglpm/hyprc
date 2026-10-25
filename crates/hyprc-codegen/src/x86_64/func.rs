@@ -1751,7 +1751,7 @@ impl<'c, 'a, 'h> FnGen<'c, 'a, 'h> {
                 self.a.ud2();
                 Ok(())
             }
-            "transmute" | "transmute_unchecked" => {
+            "transmute" | "transmute_unchecked" | "black_box" | "likely" | "unlikely" => {
                 let dty = self.mono(hyprc_mir::mono::place_ty(self.cx.tcx, &self.body, dest));
                 let size = self.layout(dty)?.size;
                 let tmp = self.alloc(size.max(8), 8);
