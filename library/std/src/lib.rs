@@ -36,7 +36,52 @@ pub mod sync {
         pub use core::sync::atomic::*;
     }
 
+    use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+
+    pub type LockResult<T> = Result<T, PoisonError<T>>;
+    pub type TryLockResult<T> = Result<T, TryLockError<T>>;
+
+    pub struct PoisonError<T> {
+        data: T,
+    }
+
+    impl<T> PoisonError<T> {
+        pub fn new(data: T) -> Self {
+            Self { data }
+        }
+        pub fn into_inner(self) -> T {
+            self.data
+        }
+        pub fn get_ref(&self) -> &T {
+            &self.data
+        }
+        pub fn get_mut(&mut self) -> &mut T {
+            &mut self.data
+        }
+    }
+
+    impl<T> core::fmt::Debug for PoisonError<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("PoisonError { .. }")
+        }
+    }
+
+    pub enum TryLockError<T> {
+        Poisoned(PoisonError<T>),
+        WouldBlock,
+    }
+
+    impl<T> core::fmt::Debug for TryLockError<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::Poisoned(_) => f.write_str("Poisoned(..)"),
+                Self::WouldBlock => f.write_str("WouldBlock"),
+            }
+        }
+    }
+
     pub struct Mutex<T: ?Sized> {
+        locked: AtomicBool,
         data: core::cell::UnsafeCell<T>,
     }
 
@@ -45,22 +90,61 @@ pub mod sync {
 
     impl<T> Mutex<T> {
         pub const fn new(data: T) -> Self {
-            Self { data: core::cell::UnsafeCell::new(data) }
+            Self {
+                locked: AtomicBool::new(false),
+                data: core::cell::UnsafeCell::new(data),
+            }
+        }
+
+        pub fn into_inner(self) -> LockResult<T> {
+            Ok(self.data.into_inner())
         }
     }
 
     impl<T: ?Sized> Mutex<T> {
-        pub fn lock(&self) -> Result<MutexGuard<'_, T>, ()> {
-            Ok(MutexGuard { lock: self })
+        pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
+            while self
+                .locked
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                while self.locked.load(Ordering::Relaxed) {
+                    core::hint::spin_loop();
+                }
+            }
+            Ok(MutexGuard {
+                lock: self,
+                _not_send: core::marker::PhantomData,
+            })
         }
 
-        pub fn get_mut(&mut self) -> Result<&mut T, ()> {
-            Ok(unsafe { &mut *self.data.get() })
+        pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                Ok(MutexGuard {
+                    lock: self,
+                    _not_send: core::marker::PhantomData,
+                })
+            } else {
+                Err(TryLockError::WouldBlock)
+            }
+        }
+
+        pub fn get_mut(&mut self) -> LockResult<&mut T> {
+            Ok(self.data.get_mut())
+        }
+
+        pub fn is_poisoned(&self) -> bool {
+            false
         }
     }
 
     pub struct MutexGuard<'a, T: ?Sized> {
         lock: &'a Mutex<T>,
+        _not_send: core::marker::PhantomData<*mut ()>,
     }
 
     impl<T: ?Sized> core::ops::Deref for MutexGuard<'_, T> {
@@ -76,25 +160,107 @@ pub mod sync {
         }
     }
 
+    impl<T: ?Sized> Drop for MutexGuard<'_, T> {
+        fn drop(&mut self) {
+            self.lock.locked.store(false, Ordering::Release);
+        }
+    }
+
+    const WRITE_LOCKED: usize = 1usize << (usize::BITS - 1);
+
     pub struct RwLock<T: ?Sized> {
+        state: AtomicUsize,
         data: core::cell::UnsafeCell<T>,
     }
 
-    unsafe impl<T: ?Sized + Send + Sync> Send for RwLock<T> {}
+    unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
     unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
     impl<T> RwLock<T> {
         pub const fn new(data: T) -> Self {
-            Self { data: core::cell::UnsafeCell::new(data) }
+            Self {
+                state: AtomicUsize::new(0),
+                data: core::cell::UnsafeCell::new(data),
+            }
+        }
+
+        pub fn into_inner(self) -> LockResult<T> {
+            Ok(self.data.into_inner())
         }
     }
 
     impl<T: ?Sized> RwLock<T> {
-        pub fn read(&self) -> Result<RwLockReadGuard<'_, T>, ()> {
-            Ok(RwLockReadGuard { lock: self })
+        pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
+            loop {
+                let state = self.state.load(Ordering::Relaxed);
+                if state & WRITE_LOCKED != 0 {
+                    core::hint::spin_loop();
+                    continue;
+                }
+                if self
+                    .state
+                    .compare_exchange_weak(
+                        state,
+                        state + 1,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return Ok(RwLockReadGuard { lock: self });
+                }
+            }
         }
-        pub fn write(&self) -> Result<RwLockWriteGuard<'_, T>, ()> {
-            Ok(RwLockWriteGuard { lock: self })
+
+        pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<'_, T>> {
+            let state = self.state.load(Ordering::Relaxed);
+            if state & WRITE_LOCKED == 0
+                && self
+                    .state
+                    .compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            {
+                Ok(RwLockReadGuard { lock: self })
+            } else {
+                Err(TryLockError::WouldBlock)
+            }
+        }
+
+        pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
+            while self
+                .state
+                .compare_exchange_weak(0, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
+            Ok(RwLockWriteGuard {
+                lock: self,
+                _not_send: core::marker::PhantomData,
+            })
+        }
+
+        pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
+            if self
+                .state
+                .compare_exchange(0, WRITE_LOCKED, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                Ok(RwLockWriteGuard {
+                    lock: self,
+                    _not_send: core::marker::PhantomData,
+                })
+            } else {
+                Err(TryLockError::WouldBlock)
+            }
+        }
+
+        pub fn get_mut(&mut self) -> LockResult<&mut T> {
+            Ok(self.data.get_mut())
+        }
+
+        pub fn is_poisoned(&self) -> bool {
+            false
         }
     }
 
@@ -109,8 +275,15 @@ pub mod sync {
         }
     }
 
+    impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
+        fn drop(&mut self) {
+            self.lock.state.fetch_sub(1, Ordering::Release);
+        }
+    }
+
     pub struct RwLockWriteGuard<'a, T: ?Sized> {
         lock: &'a RwLock<T>,
+        _not_send: core::marker::PhantomData<*mut ()>,
     }
 
     impl<T: ?Sized> core::ops::Deref for RwLockWriteGuard<'_, T> {
@@ -123,6 +296,71 @@ pub mod sync {
     impl<T: ?Sized> core::ops::DerefMut for RwLockWriteGuard<'_, T> {
         fn deref_mut(&mut self) -> &mut T {
             unsafe { &mut *self.lock.data.get() }
+        }
+    }
+
+    impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
+        fn drop(&mut self) {
+            self.lock.state.store(0, Ordering::Release);
+        }
+    }
+
+    pub struct Condvar {
+        generation: AtomicUsize,
+    }
+
+    impl Condvar {
+        pub const fn new() -> Self {
+            Self {
+                generation: AtomicUsize::new(0),
+            }
+        }
+
+        pub fn wait<'a, T: ?Sized>(
+            &self,
+            guard: MutexGuard<'a, T>,
+        ) -> LockResult<MutexGuard<'a, T>> {
+            let lock = guard.lock;
+            let generation = self.generation.load(Ordering::Acquire);
+            drop(guard);
+            while self.generation.load(Ordering::Acquire) == generation {
+                core::hint::spin_loop();
+            }
+            lock.lock()
+        }
+
+        pub fn wait_timeout<'a, T: ?Sized>(
+            &self,
+            guard: MutexGuard<'a, T>,
+            timeout: core::time::Duration,
+        ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+            let lock = guard.lock;
+            let generation = self.generation.load(Ordering::Acquire);
+            drop(guard);
+            let rounds = timeout.as_nanos().min(100_000) as usize;
+            for _ in 0..rounds {
+                if self.generation.load(Ordering::Acquire) != generation {
+                    return Ok((lock.lock()?, WaitTimeoutResult(false)));
+                }
+                core::hint::spin_loop();
+            }
+            Ok((lock.lock()?, WaitTimeoutResult(true)))
+        }
+
+        pub fn notify_one(&self) {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+
+        pub fn notify_all(&self) {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    pub struct WaitTimeoutResult(bool);
+
+    impl WaitTimeoutResult {
+        pub fn timed_out(&self) -> bool {
+            self.0
         }
     }
 
@@ -150,18 +388,33 @@ pub mod sync {
     }
 
     pub struct Once {
-        done: core::sync::atomic::AtomicBool,
+        state: AtomicU8,
     }
 
     impl Once {
         pub const fn new() -> Self {
-            Self { done: core::sync::atomic::AtomicBool::new(false) }
+            Self {
+                state: AtomicU8::new(0),
+            }
         }
 
         pub fn call_once<F: FnOnce()>(&self, f: F) {
-            if !self.done.swap(true, core::sync::atomic::Ordering::SeqCst) {
+            if self
+                .state
+                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
+            {
                 f();
+                self.state.store(2, Ordering::Release);
+            } else {
+                while self.state.load(Ordering::Acquire) != 2 {
+                    core::hint::spin_loop();
+                }
             }
+        }
+
+        pub fn is_completed(&self) -> bool {
+            self.state.load(Ordering::Acquire) == 2
         }
     }
 
@@ -223,6 +476,11 @@ pub mod panic {
 
     pub fn catch_unwind<F: FnOnce() -> R, R>(f: F) -> Result<R, Box<dyn Any + Send + 'static>> {
         Ok(f())
+    }
+
+    pub fn resume_unwind(payload: Box<dyn Any + Send + 'static>) -> ! {
+        drop(payload);
+        crate::process::abort()
     }
 }
 
@@ -481,6 +739,13 @@ pub mod path {
 
         pub fn is_relative(&self) -> bool {
             !self.is_absolute()
+        }
+
+        pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool {
+            let base = &base.as_ref().inner;
+            self.inner == *base
+                || (self.inner.starts_with(base)
+                    && self.inner.as_bytes().get(base.len()) == Some(&b'/'))
         }
 
         pub fn join<P: AsRef<Path>>(&self, path: P) -> PathBuf {
@@ -815,6 +1080,18 @@ pub mod ffi {
         }
     }
 
+    impl PartialEq<str> for OsString {
+        fn eq(&self, other: &str) -> bool {
+            self.inner == other
+        }
+    }
+
+    impl PartialEq<&str> for OsString {
+        fn eq(&self, other: &&str) -> bool {
+            self.inner == *other
+        }
+    }
+
     #[repr(transparent)]
     pub struct OsStr {
         inner: str,
@@ -844,6 +1121,20 @@ pub mod ffi {
     impl core::fmt::Debug for OsStr {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             write!(f, "{:?}", &self.inner)
+        }
+    }
+
+    impl PartialEq for OsStr {
+        fn eq(&self, other: &Self) -> bool {
+            self.inner == other.inner
+        }
+    }
+
+    impl Eq for OsStr {}
+
+    impl PartialEq<str> for OsStr {
+        fn eq(&self, other: &str) -> bool {
+            self.inner == other
         }
     }
 
@@ -1437,13 +1728,199 @@ pub mod task {
 pub use task::ready;
 
 pub mod thread {
-    pub use core::marker::PhantomData;
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+    use core::any::Any;
+    use core::ffi::c_void;
+    use core::marker::PhantomData;
+
+    pub type Result<T> = core::result::Result<T, Box<dyn Any + Send + 'static>>;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct ThreadId(usize);
+
+    #[derive(Clone, Debug)]
+    pub struct Thread {
+        id: ThreadId,
+    }
+
+    impl Thread {
+        pub fn id(&self) -> ThreadId {
+            self.id
+        }
+
+        pub fn name(&self) -> Option<&str> {
+            None
+        }
+
+        pub fn unpark(&self) {}
+    }
+
+    #[cfg(unix)]
+    unsafe extern "C" {
+        fn pthread_self() -> usize;
+        fn pthread_create(
+            thread: *mut usize,
+            attr: *const c_void,
+            start: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+            arg: *mut c_void,
+        ) -> i32;
+        fn pthread_join(thread: usize, value: *mut *mut c_void) -> i32;
+        fn pthread_detach(thread: usize) -> i32;
+        fn sched_yield() -> i32;
+    }
+
+    #[cfg(unix)]
+    fn current_id() -> usize {
+        unsafe { pthread_self() }
+    }
+
+    #[cfg(not(unix))]
+    fn current_id() -> usize {
+        0
+    }
+
+    pub fn current() -> Thread {
+        Thread {
+            id: ThreadId(current_id()),
+        }
+    }
+
+    pub fn panicking() -> bool {
+        false
+    }
+
+    pub fn yield_now() {
+        #[cfg(unix)]
+        unsafe {
+            let _ = sched_yield();
+        }
+        #[cfg(not(unix))]
+        core::hint::spin_loop();
+    }
+
+    struct Start<F>(F);
+
+    unsafe extern "C" fn start_thread<F, T>(data: *mut c_void) -> *mut c_void
+    where
+        F: FnOnce() -> T,
+    {
+        let start = unsafe { Box::from_raw(data.cast::<Start<F>>()) };
+        let Start(f) = *start;
+        Box::into_raw(Box::new(f())).cast::<c_void>()
+    }
+
+    pub struct JoinHandle<T> {
+        pthread: usize,
+        thread: Thread,
+        joined: bool,
+        output: PhantomData<T>,
+    }
+
+    unsafe impl<T: Send> Send for JoinHandle<T> {}
+    unsafe impl<T: Send> Sync for JoinHandle<T> {}
+
+    impl<T> JoinHandle<T> {
+        pub fn thread(&self) -> &Thread {
+            &self.thread
+        }
+
+        pub fn join(mut self) -> Result<T> {
+            let mut output = core::ptr::null_mut();
+            let status = unsafe { pthread_join(self.pthread, &mut output) };
+            self.joined = true;
+            if status != 0 || output.is_null() {
+                return Err(Box::new("thread failed to join"));
+            }
+            Ok(*unsafe { Box::from_raw(output.cast::<T>()) })
+        }
+
+        #[doc(hidden)]
+        pub fn as_pthread_t(&self) -> usize {
+            self.pthread
+        }
+    }
+
+    impl<T> Drop for JoinHandle<T> {
+        fn drop(&mut self) {
+            if !self.joined {
+                unsafe {
+                    let _ = pthread_detach(self.pthread);
+                }
+            }
+        }
+    }
+
+    pub struct Builder {
+        name: Option<alloc::string::String>,
+        stack_size: Option<usize>,
+    }
+
+    impl Builder {
+        pub fn new() -> Self {
+            Self {
+                name: None,
+                stack_size: None,
+            }
+        }
+
+        pub fn name(mut self, name: alloc::string::String) -> Self {
+            self.name = Some(name);
+            self
+        }
+
+        pub fn stack_size(mut self, size: usize) -> Self {
+            self.stack_size = Some(size);
+            self
+        }
+
+        pub fn spawn<F, T>(self, f: F) -> crate::io::Result<JoinHandle<T>>
+        where
+            F: FnOnce() -> T + Send + 'static,
+            T: Send + 'static,
+        {
+            let _ = (self.name, self.stack_size);
+            let start = Box::new(Start(f));
+            let data = Box::into_raw(start).cast::<c_void>();
+            let mut pthread = 0usize;
+            let status = unsafe {
+                pthread_create(
+                    &mut pthread,
+                    core::ptr::null(),
+                    start_thread::<F, T>,
+                    data,
+                )
+            };
+            if status != 0 {
+                unsafe {
+                    drop(Box::from_raw(data.cast::<Start<F>>()));
+                }
+                return Err(crate::io::Error::from_raw_os_error(status));
+            }
+            Ok(JoinHandle {
+                pthread,
+                thread: Thread {
+                    id: ThreadId(pthread),
+                },
+                joined: false,
+                output: PhantomData,
+            })
+        }
+    }
+
+    pub fn spawn<F, T>(f: F) -> JoinHandle<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        Builder::new().spawn(f).unwrap()
+    }
 
     pub struct LocalKey<T: 'static> {
         #[doc(hidden)]
         pub init: fn() -> T,
         #[doc(hidden)]
-        pub storage: core::cell::UnsafeCell<Option<T>>,
+        pub storage: crate::sync::Mutex<Vec<(ThreadId, Box<T>)>>,
     }
 
     unsafe impl<T: 'static> Sync for LocalKey<T> {}
@@ -1452,7 +1929,7 @@ pub mod thread {
         pub const fn new(init: fn() -> T) -> Self {
             Self {
                 init,
-                storage: core::cell::UnsafeCell::new(None),
+                storage: crate::sync::Mutex::new(Vec::new()),
             }
         }
 
@@ -1460,12 +1937,21 @@ pub mod thread {
         where
             F: FnOnce(&T) -> R,
         {
+            let id = current().id();
+            let mut values = self.storage.lock().unwrap();
+            let index = values
+                .iter()
+                .position(|(owner, _)| *owner == id)
+                .unwrap_or_else(|| {
+                    values.push((id, Box::new((self.init)())));
+                    values.len() - 1
+                });
+            let value = &*values[index].1 as *const T;
+            drop(values);
+            // Each entry belongs to one thread and its box has a stable address even when the
+            // protected vector grows. Reentrant `with` calls therefore remain valid as well.
             unsafe {
-                let ptr = self.storage.get();
-                if (*ptr).is_none() {
-                    *ptr = Some((self.init)());
-                }
-                f((*ptr).as_ref().unwrap())
+                f(&*value)
             }
         }
     }
@@ -1586,6 +2072,27 @@ pub mod os {
     pub mod unix {
         pub mod io {
             pub use crate::os::fd::*;
+        }
+
+        pub mod thread {
+            pub type RawPthread = usize;
+
+            pub trait JoinHandleExt {
+                fn as_pthread_t(&self) -> RawPthread;
+                fn into_pthread_t(self) -> RawPthread;
+            }
+
+            impl<T> JoinHandleExt for crate::thread::JoinHandle<T> {
+                fn as_pthread_t(&self) -> RawPthread {
+                    self.as_pthread_t()
+                }
+
+                fn into_pthread_t(self) -> RawPthread {
+                    let pthread = self.as_pthread_t();
+                    core::mem::forget(self);
+                    pthread
+                }
+            }
         }
 
         pub mod fs {
