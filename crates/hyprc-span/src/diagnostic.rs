@@ -7,6 +7,8 @@ use std::io::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+const MAX_PRINTED_ERRORS: usize = 100;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub enum Level {
     Error,
@@ -144,7 +146,18 @@ impl DiagCtxt {
     pub fn emit(&self, diag: Diag) {
         match diag.level {
             Level::Error => {
-                self.errors.fetch_add(1, Ordering::Relaxed);
+                let error_index = self.errors.fetch_add(1, Ordering::Relaxed);
+                if self.buffer.is_none() && error_index >= MAX_PRINTED_ERRORS {
+                    if error_index == MAX_PRINTED_ERRORS {
+                        let limit = Diag::error(format!(
+                            "too many errors emitted; suppressing diagnostics after {MAX_PRINTED_ERRORS} errors"
+                        ));
+                        let text = render_human(&limit, self.color);
+                        let _guard = self.out.lock().unwrap_or_else(|e| e.into_inner());
+                        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+                    }
+                    return;
+                }
                 // `HYPRC_PANIC_ON_ERROR=1`: where in hyprc an error comes from (with
                 // `RUST_BACKTRACE=1`). Not for buffered (speculative) contexts.
                 if self.buffer.is_none() && std::env::var_os("HYPRC_PANIC_ON_ERROR").is_some() {
