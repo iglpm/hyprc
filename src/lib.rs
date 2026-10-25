@@ -169,51 +169,6 @@ pub fn compile(opts: Options, dev: DevFlags) -> i32 {
     if sess.dcx.has_errors() {
         return abort(&sess);
     }
-    let mcx = hyprc_mir::mono::MonoCtxt::new(&tcx, sess.opts.overflow_checks);
-    let roots = hyprc_mir::mono::roots(&tcx, &mcx);
-    let (instances, statics) = mcx.collect(roots);
-    timer.stage("build MIR, collect instances");
-    if dev.dump.iter().any(|d| d == "mir") {
-        for inst in &instances {
-            println!("// {inst:?}");
-            if let Some(body) = mcx.instance_mir(*inst) {
-                println!("{}", hyprc_mir::print::body_to_string(&body));
-            }
-        }
-        println!("// statics: {statics:?}");
-    }
-    if sess.dcx.has_errors() {
-        return abort(&sess);
-    }
-    let cx = hyprc_codegen::CodegenCx::new(&tcx, &mcx);
-    let c_main = if !tcx.hir.no_main {
-        tcx.hir
-            .entry
-            .map(|d| hyprc_mir::mono::Instance::item(d, hyprc_ty::Args::EMPTY))
-    } else {
-        None
-    };
-    let out = hyprc_codegen::codegen(&cx, &instances, &statics, c_main);
-    timer.stage("code generation");
-    for e in &out.errors {
-        sess.dcx.emit(hyprc_span::Diag::error(e.clone()));
-    }
-    if sess.dcx.has_errors() {
-        return abort(&sess);
-    }
-
-    // Outputs: rustc's naming conventions and emission.
-    let out_dir = sess
-        .opts
-        .out_dir
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let _ = std::fs::create_dir_all(&out_dir);
-    let exe = sess
-        .opts
-        .output
-        .clone()
-        .unwrap_or_else(|| out_dir.join(format!("{crate_name}{}", sess.opts.extra_filename)));
     let wants_obj = sess
         .opts
         .emit
@@ -234,13 +189,74 @@ pub fn compile(opts: Options, dev: DevFlags) -> i32 {
         .emit
         .iter()
         .any(|(k, _)| *k == hyprc_span::session::EmitKind::DepInfo);
+    let is_bin = sess.opts.crate_types.iter().any(|t| {
+        matches!(
+            t,
+            hyprc_span::session::CrateType::Bin | hyprc_span::session::CrateType::Cdylib
+        )
+    });
 
+    // Metadata and dependency discovery need parsing and type checking, but no MIR or machine
+    // code. Besides avoiding unsupported codegen in unreachable generic bodies, this makes
+    // `igl check --compiler hyprc` and dependency scans substantially cheaper.
+    let object = if wants_obj || (wants_link && is_bin) {
+        let mcx = hyprc_mir::mono::MonoCtxt::new(&tcx, sess.opts.overflow_checks);
+        let roots = hyprc_mir::mono::roots(&tcx, &mcx);
+        let (instances, statics) = mcx.collect(roots);
+        timer.stage("build MIR, collect instances");
+        if dev.dump.iter().any(|d| d == "mir") {
+            for inst in &instances {
+                println!("// {inst:?}");
+                if let Some(body) = mcx.instance_mir(*inst) {
+                    println!("{}", hyprc_mir::print::body_to_string(&body));
+                }
+            }
+            println!("// statics: {statics:?}");
+        }
+        if sess.dcx.has_errors() {
+            return abort(&sess);
+        }
+        let cx = hyprc_codegen::CodegenCx::new(&tcx, &mcx);
+        let c_main = if !tcx.hir.no_main {
+            tcx.hir
+                .entry
+                .map(|d| hyprc_mir::mono::Instance::item(d, hyprc_ty::Args::EMPTY))
+        } else {
+            None
+        };
+        let out = hyprc_codegen::codegen(&cx, &instances, &statics, c_main);
+        timer.stage("code generation");
+        for e in &out.errors {
+            sess.dcx.emit(hyprc_span::Diag::error(e.clone()));
+        }
+        if sess.dcx.has_errors() {
+            return abort(&sess);
+        }
+        Some(out.object)
+    } else {
+        None
+    };
+
+    // Outputs: rustc's naming conventions and emission.
+    let out_dir = sess
+        .opts
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&out_dir);
+    let exe = sess
+        .opts
+        .output
+        .clone()
+        .unwrap_or_else(|| out_dir.join(format!("{crate_name}{}", sess.opts.extra_filename)));
     let obj_path = if wants_obj && !wants_link {
         exe.clone()
     } else {
         exe.with_extension("hyprc.o")
     };
-    if let Err(e) = std::fs::write(&obj_path, &out.object) {
+    if let Some(ref object) = object
+        && let Err(e) = std::fs::write(&obj_path, object)
+    {
         eprintln!("error: couldn't write `{}`: {e}", obj_path.display());
         return 1;
     }
@@ -259,13 +275,6 @@ pub fn compile(opts: Options, dev: DevFlags) -> i32 {
             emit_json_artifact(&dep_info_path, "dep-info");
         }
     }
-
-    let is_bin = sess.opts.crate_types.iter().any(|t| {
-        matches!(
-            t,
-            hyprc_span::session::CrateType::Bin | hyprc_span::session::CrateType::Cdylib
-        )
-    });
 
     // Write metadata (.rmeta) if requested or for library crates
     let rmeta_path = out_dir.join(format!("lib{crate_name}{}.rmeta", sess.opts.extra_filename));
@@ -320,8 +329,15 @@ pub fn compile(opts: Options, dev: DevFlags) -> i32 {
         let lib_path = sess.opts.output.clone().unwrap_or_else(|| {
             out_dir.join(format!("lib{crate_name}{}.rlib", sess.opts.extra_filename))
         });
-        let _ = std::fs::copy(&obj_path, &lib_path);
-        let _ = std::fs::remove_file(&obj_path);
+        // Hyprc monomorphizes dependency bodies into the final executable from source-backed
+        // metadata, so library objects are unused. Keep an rlib-shaped metadata artifact for
+        // Cargo-compatible build graphs without spending time generating dead machine code.
+        if object.is_some() {
+            let _ = std::fs::copy(&obj_path, &lib_path);
+            let _ = std::fs::remove_file(&obj_path);
+        } else {
+            let _ = std::fs::copy(&rmeta_path, &lib_path);
+        }
         if sess.opts.json_artifacts {
             emit_json_artifact(&lib_path, "link");
         }
