@@ -103,6 +103,12 @@ pub mod sync {
         }
     }
 
+    impl<T: Default> Default for Mutex<T> {
+        fn default() -> Self {
+            Self::new(T::default())
+        }
+    }
+
     impl<T: ?Sized> Mutex<T> {
         pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
             while self
@@ -188,6 +194,12 @@ pub mod sync {
 
         pub fn into_inner(self) -> LockResult<T> {
             Ok(self.data.into_inner())
+        }
+    }
+
+    impl<T: Default> Default for RwLock<T> {
+        fn default() -> Self {
+            Self::new(T::default())
         }
     }
 
@@ -617,6 +629,45 @@ pub mod io {
 
     pub trait Seek {
         fn seek(&mut self, pos: SeekFrom) -> Result<u64>;
+    }
+
+    impl Read for &[u8] {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            let n = core::cmp::min(self.len(), buf.len());
+            buf[..n].copy_from_slice(&self[..n]);
+            *self = &self[n..];
+            Ok(n)
+        }
+    }
+
+    impl BufRead for &[u8] {
+        fn fill_buf(&mut self) -> Result<&[u8]> { Ok(*self) }
+        fn consume(&mut self, amount: usize) {
+            *self = &self[core::cmp::min(amount, self.len())..];
+        }
+    }
+
+    impl Write for Vec<u8> {
+        fn write(&mut self, buf: &[u8]) -> Result<usize> {
+            self.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> Result<()> { Ok(()) }
+    }
+
+    pub struct BufReader<R> {
+        inner: R,
+    }
+
+    impl<R> BufReader<R> {
+        pub fn new(inner: R) -> Self { Self { inner } }
+        pub fn get_ref(&self) -> &R { &self.inner }
+        pub fn get_mut(&mut self) -> &mut R { &mut self.inner }
+        pub fn into_inner(self) -> R { self.inner }
+    }
+
+    impl<R: Read> Read for BufReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> { self.inner.read(buf) }
     }
 
     pub enum SeekFrom {
@@ -2142,6 +2193,11 @@ pub mod os {
     }
 
     pub mod unix {
+        pub mod prelude {
+            pub use crate::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+            pub use crate::os::unix::fs::{DirEntryExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt};
+        }
+
         pub mod io {
             pub use crate::os::fd::*;
         }
