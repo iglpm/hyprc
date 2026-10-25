@@ -6,6 +6,8 @@
 #![no_std]
 #![allow(unused_imports, dead_code, non_camel_case_types)]
 
+extern crate alloc;
+
 pub use core::*;
 pub use alloc::*;
 
@@ -369,6 +371,19 @@ pub mod sync {
         pub fn new(data: T) -> Self {
             Self(alloc::sync::Arc::new(data))
         }
+
+        pub fn into_raw(this: Self) -> *const T {
+            alloc::sync::Arc::into_raw(this.0)
+        }
+
+        pub unsafe fn from_raw(ptr: *const T) -> Self {
+            Self(unsafe { alloc::sync::Arc::from_raw(ptr) })
+        }
+    }
+    impl<T: Default> Default for Arc<T> {
+        fn default() -> Self {
+            Self::new(T::default())
+        }
     }
     impl<T: ?Sized> core::ops::Deref for Arc<T> {
         type Target = T;
@@ -467,6 +482,15 @@ pub mod panic {
     use alloc::boxed::Box;
 
     pub struct AssertUnwindSafe<T>(pub T);
+
+    impl<T> core::ops::Deref for AssertUnwindSafe<T> {
+        type Target = T;
+        fn deref(&self) -> &T { &self.0 }
+    }
+
+    impl<T> core::ops::DerefMut for AssertUnwindSafe<T> {
+        fn deref_mut(&mut self) -> &mut T { &mut self.0 }
+    }
 
     pub trait RefUnwindSafe {}
     pub trait UnwindSafe {}
@@ -1310,6 +1334,20 @@ pub mod fs {
 
     pub struct File;
 
+    #[derive(Clone, Debug, Default)]
+    pub struct OpenOptions;
+
+    impl OpenOptions {
+        pub fn new() -> Self { Self }
+        pub fn read(&mut self, _read: bool) -> &mut Self { self }
+        pub fn write(&mut self, _write: bool) -> &mut Self { self }
+        pub fn append(&mut self, _append: bool) -> &mut Self { self }
+        pub fn truncate(&mut self, _truncate: bool) -> &mut Self { self }
+        pub fn create(&mut self, _create: bool) -> &mut Self { self }
+        pub fn create_new(&mut self, _create_new: bool) -> &mut Self { self }
+        pub fn open<P: AsRef<Path>>(&self, path: P) -> io::Result<File> { File::open(path) }
+    }
+
     impl File {
         pub fn open<P: AsRef<Path>>(path: P) -> io::Result<File> {
             let _ = path;
@@ -1385,6 +1423,18 @@ pub mod time {
         pub fn elapsed(&self) -> Duration {
             Duration::from_secs(0)
         }
+        pub fn checked_add(&self, _duration: Duration) -> Option<Instant> { Some(*self) }
+        pub fn checked_sub(&self, _duration: Duration) -> Option<Instant> { Some(*self) }
+    }
+
+    impl core::ops::Sub for Instant {
+        type Output = Duration;
+        fn sub(self, _other: Instant) -> Duration { Duration::from_secs(0) }
+    }
+
+    impl core::ops::Add<Duration> for Instant {
+        type Output = Instant;
+        fn add(self, _duration: Duration) -> Instant { self }
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -1468,6 +1518,10 @@ pub mod collections {
     pub use alloc::collections::*;
     use alloc::vec::Vec;
     use core::marker::PhantomData;
+
+    pub mod hash_map {
+        pub use crate::hash::{DefaultHasher, RandomState};
+    }
 
     #[derive(Clone, Debug, Default)]
     pub struct HashMap<K, V, S = ()> {
@@ -1799,6 +1853,14 @@ pub mod thread {
         core::hint::spin_loop();
     }
 
+    pub fn park() {
+        yield_now();
+    }
+
+    pub fn park_timeout(_duration: crate::time::Duration) {
+        yield_now();
+    }
+
     struct Start<F>(F);
 
     unsafe extern "C" fn start_thread<F, T>(data: *mut c_void) -> *mut c_void
@@ -1925,6 +1987,9 @@ pub mod thread {
 
     unsafe impl<T: 'static> Sync for LocalKey<T> {}
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct AccessError;
+
     impl<T: 'static> LocalKey<T> {
         pub const fn new(init: fn() -> T) -> Self {
             Self {
@@ -1953,6 +2018,13 @@ pub mod thread {
             unsafe {
                 f(&*value)
             }
+        }
+
+        pub fn try_with<F, R>(&'static self, f: F) -> core::result::Result<R, AccessError>
+        where
+            F: FnOnce(&T) -> R,
+        {
+            Ok(self.with(f))
         }
     }
 }
