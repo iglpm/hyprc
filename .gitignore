@@ -1,0 +1,8 @@
+/target
+/.igel/
+/Igel.lock.bin
+**/*.rs.bk
+*.o
+*.rmeta
+*.rlib
+
