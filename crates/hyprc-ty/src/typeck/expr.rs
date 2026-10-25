@@ -106,7 +106,11 @@ impl<'a, 'h> FnCtxt<'a, 'h> {
                 if let Some(h) = expected.only_has_type() {
                     let _ = self.infcx.unify(target, h);
                 }
-                let from = self.check_expr_with(*x, Expectation::Castable(target));
+                // A cast constrains what conversions are legal, but its destination is not an
+                // expected type for the operand. In `(if cond { 10 } else { level }) as usize`,
+                // `level: i32` makes both branches `i32`; pushing `usize` inward rejects valid
+                // Rust before the cast is checked.
+                let from = self.check_expr_with(*x, Expectation::None);
                 self.check_cast(e, *x, from, target);
                 target
             }
