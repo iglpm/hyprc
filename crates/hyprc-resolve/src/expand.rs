@@ -722,43 +722,28 @@ impl Resolver<'_> {
                 Ok(vec![Token::ident(Symbol::intern(&s), span)])
             }
             BuiltinMacro::Format => {
-                let mut out = tokens_of("::alloc::fmt::format(builtin # format_args", span);
-                out.push(Token::new(TokenKind::Open(Delim::Paren), span));
-                out.extend_from_slice(args);
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+                let mut out = Vec::new();
+                append_format_call(&mut out, "::alloc::fmt::format", "format_args", args, span);
                 Ok(out)
             }
             BuiltinMacro::Println => {
-                let mut out = tokens_of("::std::io::_print(builtin # format_args_nl", span);
-                out.push(Token::new(TokenKind::Open(Delim::Paren), span));
-                out.extend_from_slice(args);
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+                let mut out = Vec::new();
+                append_format_call(&mut out, "::std::io::_print", "format_args_nl", args, span);
                 Ok(out)
             }
             BuiltinMacro::Eprintln => {
-                let mut out = tokens_of("::std::io::_eprint(builtin # format_args_nl", span);
-                out.push(Token::new(TokenKind::Open(Delim::Paren), span));
-                out.extend_from_slice(args);
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+                let mut out = Vec::new();
+                append_format_call(&mut out, "::std::io::_eprint", "format_args_nl", args, span);
                 Ok(out)
             }
             BuiltinMacro::Print => {
-                let mut out = tokens_of("::std::io::_print(builtin # format_args", span);
-                out.push(Token::new(TokenKind::Open(Delim::Paren), span));
-                out.extend_from_slice(args);
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+                let mut out = Vec::new();
+                append_format_call(&mut out, "::std::io::_print", "format_args", args, span);
                 Ok(out)
             }
             BuiltinMacro::Eprint => {
-                let mut out = tokens_of("::std::io::_eprint(builtin # format_args", span);
-                out.push(Token::new(TokenKind::Open(Delim::Paren), span));
-                out.extend_from_slice(args);
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
-                out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+                let mut out = Vec::new();
+                append_format_call(&mut out, "::std::io::_eprint", "format_args", args, span);
                 Ok(out)
             }
             BuiltinMacro::Write => {
@@ -770,9 +755,7 @@ impl Resolver<'_> {
                 };
                 let mut out = Vec::new();
                 out.extend_from_slice(dst);
-                out.extend(tokens_of(".write_fmt(builtin # format_args(", span));
-                out.extend_from_slice(rest);
-                out.extend(tokens_of("))", span));
+                append_format_call(&mut out, ".write_fmt", "format_args", rest, span);
                 Ok(out)
             }
             BuiltinMacro::Writeln => {
@@ -784,9 +767,7 @@ impl Resolver<'_> {
                 };
                 let mut out = Vec::new();
                 out.extend_from_slice(dst);
-                out.extend(tokens_of(".write_fmt(builtin # format_args_nl(", span));
-                out.extend_from_slice(rest);
-                out.extend(tokens_of("))", span));
+                append_format_call(&mut out, ".write_fmt", "format_args_nl", rest, span);
                 Ok(out)
             }
             BuiltinMacro::Vec => {
@@ -1037,6 +1018,26 @@ fn builtin_syntax(name: &str, args: &[Token], span: Span) -> Vec<Token> {
     out.extend_from_slice(args);
     out.push(Token::new(TokenKind::Close(Delim::Paren), span));
     out
+}
+
+/// Appends `callee(builtin # format_name(args))` without asking the lexer to repair an
+/// intentionally unfinished delimiter sequence.
+fn append_format_call(
+    out: &mut Vec<Token>,
+    callee: &str,
+    format_name: &str,
+    args: &[Token],
+    span: Span,
+) {
+    out.extend(tokens_of(callee, span));
+    out.push(Token::new(TokenKind::Open(Delim::Paren), span));
+    out.push(Token::ident(kw::Builtin, span));
+    out.push(Token::new(TokenKind::Pound, span));
+    out.push(Token::ident(Symbol::intern(format_name), span));
+    out.push(Token::new(TokenKind::Open(Delim::Paren), span));
+    out.extend_from_slice(args);
+    out.push(Token::new(TokenKind::Close(Delim::Paren), span));
+    out.push(Token::new(TokenKind::Close(Delim::Paren), span));
 }
 
 fn dummy_mac(span: Span) -> Box<ast::MacCall> {

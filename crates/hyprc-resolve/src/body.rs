@@ -142,11 +142,25 @@ impl BodyExpander<'_, '_> {
         let call_site = mac.path.span.to(mac.args.close);
         let expn = self.r.new_expansion(def, parent, call_site);
         let (_, _, edition, _) = self.r.macro_impl(def);
-        match self
-            .r
-            .expand_bang(def, mac, expn, self.module, self.scope, FragmentKind::Items)
-        {
-            Ok(tokens) => Some((tokens, edition, expn)),
+        let expansion =
+            self.r
+                .expand_bang(def, mac, expn, self.module, self.scope, FragmentKind::Items);
+        match expansion {
+            Ok(tokens) => {
+                if std::env::var_os("HYPRC_DEBUG_MACROS").is_some() {
+                    eprintln!(
+                        "hyprc: {}! => {}",
+                        mac.path
+                            .segments
+                            .iter()
+                            .map(|segment| segment.ident.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                        crate::macros::builtin::tokens_to_string(&tokens)
+                    );
+                }
+                Some((tokens, edition, expn))
+            }
             Err(d) => {
                 self.r.sess.dcx.emit(d);
                 self.depth -= 1;
