@@ -309,6 +309,11 @@ pub mod io {
         }
     }
 
+    pub trait BufRead: Read {
+        fn fill_buf(&mut self) -> Result<&[u8]>;
+        fn consume(&mut self, amount: usize);
+    }
+
     pub trait Write {
         fn write(&mut self, buf: &[u8]) -> Result<usize>;
         fn flush(&mut self) -> Result<()>;
@@ -580,24 +585,6 @@ pub mod path {
     impl AsRef<crate::ffi::OsStr> for Path {
         fn as_ref(&self) -> &crate::ffi::OsStr {
             self.as_os_str()
-        }
-    }
-
-    impl AsRef<crate::ffi::OsStr> for PathBuf {
-        fn as_ref(&self) -> &crate::ffi::OsStr {
-            self.as_os_str()
-        }
-    }
-
-    impl AsRef<Path> for str {
-        fn as_ref(&self) -> &Path {
-            Path::new(self)
-        }
-    }
-
-    impl AsRef<Path> for String {
-        fn as_ref(&self) -> &Path {
-            Path::new(self)
         }
     }
 
