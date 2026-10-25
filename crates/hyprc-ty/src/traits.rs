@@ -546,6 +546,14 @@ impl<'a, 'h> Solver<'a, 'h> {
                 })
             });
         }
+        // An embedded inference variable can distinguish otherwise separate impls. This is
+        // common for arrays: `[T; ?N]: Default` has one impl per supported length, and a later
+        // use of the value can still determine `N`. Do not run the quadratic specialization
+        // comparison over all of those candidates or reject an empty provisional set before
+        // that later constraint has arrived.
+        if tr.args.has_infer() && candidates.len() != 1 {
+            return SelectResult::Ambiguous;
+        }
         // Specialization: of impls that all apply, the one specializing all others.
         if candidates.len() > 1 && candidates.iter().all(|c| matches!(c, Candidate::Impl(_))) {
             let imps: Vec<DefId> = candidates

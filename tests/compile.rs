@@ -44,6 +44,16 @@ fn cast_targets_do_not_leak_into_branch_inference() {
 }
 
 #[test]
+fn later_uses_infer_const_generic_method_results() {
+    let output = compile("tests/compile-pass/try_into_array_inference.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn no_std_crate_can_explicitly_link_std() {
     let output = compile("tests/compile-pass/explicit_std.rs");
     assert!(

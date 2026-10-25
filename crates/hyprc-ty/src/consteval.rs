@@ -4,6 +4,7 @@
 //! code is const-evaluated by the MIR interpreter.
 
 use crate::TyCtxt;
+use crate::lower_ty::TyLowerer;
 use crate::ty::*;
 use hyprc_hir as hir;
 use hyprc_hir::{BinOpKind, BodyId, DefKind, Res, UnOp};
@@ -120,6 +121,37 @@ pub fn sext(v: u128, ty: Ty, pointer_width: u32) -> i128 {
 }
 
 impl TyCtxt<'_> {
+    fn const_size_of(&self, ty: Ty) -> Option<u128> {
+        let bytes = match *ty.kind() {
+            TyKind::Bool | TyKind::Int(hir::IntTy::I8) | TyKind::Uint(hir::UintTy::U8) => 1,
+            TyKind::Int(hir::IntTy::I16)
+            | TyKind::Uint(hir::UintTy::U16)
+            | TyKind::Float(hir::FloatTy::F16) => 2,
+            TyKind::Char
+            | TyKind::Int(hir::IntTy::I32)
+            | TyKind::Uint(hir::UintTy::U32)
+            | TyKind::Float(hir::FloatTy::F32) => 4,
+            TyKind::Int(hir::IntTy::I64)
+            | TyKind::Uint(hir::UintTy::U64)
+            | TyKind::Float(hir::FloatTy::F64) => 8,
+            TyKind::Int(hir::IntTy::I128)
+            | TyKind::Uint(hir::UintTy::U128)
+            | TyKind::Float(hir::FloatTy::F128) => 16,
+            TyKind::Int(hir::IntTy::Isize)
+            | TyKind::Uint(hir::UintTy::Usize)
+            | TyKind::Ref(..)
+            | TyKind::RawPtr(..)
+            | TyKind::FnPtr(_) => (self.pointer_width / 8) as u128,
+            TyKind::Never => 0,
+            TyKind::Tuple(ts) if ts.as_slice().is_empty() => 0,
+            TyKind::Array(elem, len) => {
+                self.const_size_of(elem)?.checked_mul(len.try_to_bits()?)?
+            }
+            _ => return None,
+        };
+        Some(bytes)
+    }
+
     /// Evaluates a body as a constant of type `ty`. Generic or too complex: unevaluated.
     pub fn eval_const_body(&self, body: BodyId, ty: Ty, args: Args) -> Const {
         let b = self.hir.body(body);
@@ -287,6 +319,24 @@ impl TyCtxt<'_> {
                 self.eval(b, tail, expected, args, depth + 1)
             }
             hir::ExprKind::ConstBlock(inner) => self.eval(b, *inner, expected, args, depth + 1),
+            hir::ExprKind::Call(callee, call_args) if call_args.is_empty() => {
+                let hir::ExprKind::Path(hir::QPath::Resolved(_, path)) = &b.expr(*callee).kind
+                else {
+                    return None;
+                };
+                let Res::Def(_, def) = path.res else {
+                    return None;
+                };
+                if self.hir.name(def).as_str() != "size_of" {
+                    return None;
+                }
+                let generic = path.segments.last()?.args.as_deref()?;
+                let hir::GenericArg::Type(hir_ty) = generic.args.first()? else {
+                    return None;
+                };
+                let ty = TyLowerer::new(self, b.owner).lower(hir_ty).subst(args);
+                Some(Val::Bits(self.const_size_of(ty)?, Ty::USIZE))
+            }
             hir::ExprKind::Path(hir::QPath::Resolved(None, path)) => match path.res {
                 Res::ConstParam { index, owner } => {
                     let c = args.get(index as usize).and_then(|a| a.as_const());
