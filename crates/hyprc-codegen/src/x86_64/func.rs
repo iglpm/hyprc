@@ -842,9 +842,30 @@ impl<'c, 'a, 'h> FnGen<'c, 'a, 'h> {
                 // Evaluate once into a temporary, then copy it into each element.
                 let tmp = self.alloc(el.size, el.align);
                 self.store_operand(mem(Reg::Rbp, tmp), op, el.size)?;
-                for i in 0..n {
-                    let d = self.place(p, DEST)?;
-                    self.copy_mem(d.mem((i * stride) as i32), mem(Reg::Rbp, tmp), el.size);
+                if n == 0 || el.size == 0 {
+                    return Ok(());
+                }
+
+                let d = self.place(p, DEST)?;
+                self.copy_mem(d.mem(0), mem(Reg::Rbp, tmp), el.size);
+                if stride == el.size {
+                    // Copy initialized prefixes in successively larger blocks. This keeps
+                    // lowering and generated code logarithmic for large packed arrays.
+                    let mut initialized = 1;
+                    while initialized < n {
+                        let count = initialized.min(n - initialized);
+                        self.copy_mem(
+                            d.mem((initialized * stride) as i32),
+                            d.mem(0),
+                            count * stride,
+                        );
+                        initialized += count;
+                    }
+                } else {
+                    // Padding bytes may be uninitialized, so only copy the value bytes.
+                    for i in 1..n {
+                        self.copy_mem(d.mem((i * stride) as i32), mem(Reg::Rbp, tmp), el.size);
+                    }
                 }
                 Ok(())
             }
