@@ -283,6 +283,11 @@ pub fn compile(opts: Options, dev: DevFlags) -> i32 {
                 meta_content.push_str(&format!("cfg={name}\n"));
             }
         }
+        for dependency in &sess.opts.externs {
+            if let Some(path) = &dependency.path {
+                meta_content.push_str(&format!("extern={}={}\n", dependency.name, path.display()));
+            }
+        }
         let _ = std::fs::write(&rmeta_path, meta_content);
         if sess.opts.json_artifacts {
             emit_json_artifact(&rmeta_path, "metadata");

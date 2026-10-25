@@ -1380,6 +1380,25 @@ fn read_crate_edition(
 
 impl<'s> Resolver<'s> {
     pub(crate) fn load_extern_crate(&mut self, name: Symbol, path: &Path) -> Option<DefId> {
+        if let Some(&root) = self.extern_prelude.get(&name) {
+            return Some(root);
+        }
+        // `#![no_std]` crates commonly opt back into `std` with `extern crate std`.
+        // In that path `load_extern_crates` has only loaded core, so make the implicit
+        // sysroot dependency chain explicit before collecting the requested crate.
+        if name == Symbol::intern("std")
+            && !self.extern_prelude.contains_key(&Symbol::intern("alloc"))
+            && let Some(alloc) = find_sysroot_crate(self.sess, "alloc")
+        {
+            self.load_extern_crate(Symbol::intern("alloc"), &alloc)?;
+        }
+        if name == Symbol::intern("alloc")
+            && !self.extern_prelude.contains_key(&sym::core)
+            && let Some(core) = find_sysroot_crate(self.sess, "core")
+        {
+            self.load_extern_crate(sym::core, &core)?;
+        }
+
         let krate = crate::CrateNum(self.crate_roots.len() as u32);
         let root = DefId(self.defs.len() as u32);
         self.defs.push(crate::DefData {
@@ -1530,6 +1549,7 @@ impl<'s> Resolver<'s> {
         for e in &self.sess.opts.externs {
             let name_sym = Symbol::intern(&e.name);
             if let Some(p) = &e.path {
+                self.load_metadata_dependencies(p, &mut FxHashSet::default());
                 if let Some(f) = resolve_extern_source(&e.name, p, self.sess) {
                     self.load_extern_crate(name_sym, &f);
                     if name_sym == sym::core {
@@ -1565,6 +1585,40 @@ impl<'s> Resolver<'s> {
         {
             if let Some(std_path) = find_sysroot_crate(self.sess, "std") {
                 self.load_extern_crate(Symbol::intern("std"), &std_path);
+            }
+        }
+    }
+
+    fn load_metadata_dependencies(&mut self, artifact: &Path, seen: &mut FxHashSet<PathBuf>) {
+        let artifact = if artifact.extension().is_some_and(|ext| ext == "rmeta") {
+            artifact.to_path_buf()
+        } else {
+            artifact.with_extension("rmeta")
+        };
+        if !seen.insert(artifact.clone()) {
+            return;
+        }
+        let Ok(content) = std::fs::read_to_string(&artifact) else {
+            return;
+        };
+        if !content.starts_with("HYPRC_META") {
+            return;
+        }
+        for dependency in content
+            .lines()
+            .filter_map(|line| line.strip_prefix("extern="))
+        {
+            let Some((name, path)) = dependency.split_once('=') else {
+                continue;
+            };
+            let name = Symbol::intern(name);
+            if self.extern_prelude.contains_key(&name) {
+                continue;
+            }
+            let path = PathBuf::from(path);
+            self.load_metadata_dependencies(&path, seen);
+            if let Some(source) = resolve_extern_source(name.as_str(), &path, self.sess) {
+                self.load_extern_crate(name, &source);
             }
         }
     }
@@ -1659,29 +1713,61 @@ fn resolve_extern_source(name: &str, p: &Path, sess: &Session) -> Option<PathBuf
         }
     }
 
+    // A dependency reached through another crate's source is not repeated in this rustc
+    // invocation's `--extern` flags. Find hyprc's source-bearing metadata in `-L dependency`
+    // before falling back to a registry scan, preserving the exact selected version.
+    let name_snake = name.replace('-', "_");
+    for (_, search) in &sess.opts.search_paths {
+        if let Ok(entries) = std::fs::read_dir(search) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                let file_name = file_name.to_string_lossy();
+                if file_name.starts_with(&format!("lib{name_snake}-"))
+                    && file_name.ends_with(".rmeta")
+                    && let Ok(content) = std::fs::read_to_string(entry.path())
+                    && content.starts_with("HYPRC_META")
+                    && let Some(source) = content
+                        .lines()
+                        .find_map(|line| line.strip_prefix("source="))
+                    && Path::new(source).is_file()
+                {
+                    return Some(PathBuf::from(source));
+                }
+            }
+        }
+    }
+
     // 4. Sysroot fallback
     if let Some(sys_crate) = find_sysroot_crate(sess, name) {
         return Some(sys_crate);
     }
 
     // 5. Registry fallback: .igel/registry or .cargo/registry
+    let mut registry_bases = Vec::new();
+    if let Some(igel_home) = std::env::var_os("IGEL_HOME").map(PathBuf::from) {
+        registry_bases.push(igel_home.join("registry/src"));
+    }
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME").map(PathBuf::from) {
+        registry_bases.push(cargo_home.join("registry/src"));
+    }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for reg_base in [
-            home.join(".igel/registry/src"),
-            home.join(".cargo/registry/src"),
-        ] {
-            if let Ok(index_dirs) = std::fs::read_dir(reg_base) {
-                for index_dir in index_dirs.flatten() {
-                    if let Ok(crate_dirs) = std::fs::read_dir(index_dir.path()) {
-                        for crate_dir in crate_dirs.flatten() {
-                            let name_with_dash = format!("{name}-");
-                            let dir_name = crate_dir.file_name();
-                            let dir_str = dir_name.to_string_lossy();
-                            if dir_str.starts_with(&name_with_dash) {
-                                let cand = crate_dir.path().join("src/lib.rs");
-                                if cand.is_file() {
-                                    return Some(cand);
-                                }
+        registry_bases.push(home.join(".igel/registry/src"));
+        registry_bases.push(home.join(".cargo/registry/src"));
+    }
+    let name_dashed = name.replace('_', "-");
+    for reg_base in registry_bases {
+        if let Ok(index_dirs) = std::fs::read_dir(reg_base) {
+            for index_dir in index_dirs.flatten() {
+                if let Ok(crate_dirs) = std::fs::read_dir(index_dir.path()) {
+                    for crate_dir in crate_dirs.flatten() {
+                        let dir_name = crate_dir.file_name();
+                        let dir_str = dir_name.to_string_lossy();
+                        if dir_str.starts_with(&format!("{name}-"))
+                            || dir_str.starts_with(&format!("{name_dashed}-"))
+                        {
+                            let cand = crate_dir.path().join("src/lib.rs");
+                            if cand.is_file() {
+                                return Some(cand);
                             }
                         }
                     }
