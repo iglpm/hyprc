@@ -2,16 +2,80 @@ use std::path::Path;
 use std::process::Command;
 
 fn compile(source: &str) -> std::process::Output {
+    compile_with_edition(source, "2021")
+}
+
+fn compile_with_edition(source: &str, edition: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_hyprc"))
-        .args(["--edition", "2021", "--emit", "metadata"])
+        .args(["--edition", edition, "--emit", "metadata"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
         .output()
         .unwrap()
 }
 
 #[test]
+fn built_in_derives_resolve_core_in_rust_2015() {
+    let output = compile_with_edition("tests/compile-pass/derive_2015.rs", "2015");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn unix_threads_have_a_safe_spawn_join_and_local_storage_surface() {
+    let output = compile("tests/compile-pass/threading.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cast_targets_do_not_leak_into_branch_inference() {
+    let output = compile("tests/compile-pass/cast_branch_inference.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn no_std_crate_can_explicitly_link_std() {
     let output = compile("tests/compile-pass/explicit_std.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn standard_sync_primitives_have_the_expected_safe_surface() {
+    let output = compile("tests/compile-pass/std_sync.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn formatting_macros_keep_their_nested_delimiters_balanced() {
+    let output = compile("tests/compile-pass/formatting_macros.rs");
+    assert!(
+        output.status.success(),
+        "unexpected diagnostic:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn os_strings_and_paths_support_real_build_script_comparisons() {
+    let output = compile("tests/compile-pass/os_paths.rs");
     assert!(
         output.status.success(),
         "unexpected diagnostic:\n{}",
