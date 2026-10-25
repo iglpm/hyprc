@@ -558,8 +558,16 @@ impl Parser<'_> {
             }
             TokenKind::Open(Delim::Invisible) => {
                 self.bump();
-                let e = self.parse_expr()?;
+                let mut e = self.parse_expr()?;
                 self.expect(TokenKind::Close(Delim::Invisible))?;
+                // Macro `expr` fragments retain their opaque precedence, but a captured
+                // block must remain block-like in statement position. Wrapping `{ ... }`
+                // in a synthetic parenthesis makes the following statement look adjacent
+                // (`{ ... } next`) and rejects valid transcribers such as `probe_loop!`.
+                if expr_is_block_like(&e) {
+                    e.span = lo.to(self.prev_token.span);
+                    return Ok(e);
+                }
                 return Ok(mk(ExprKind::Paren(e), lo.to(self.prev_token.span)));
             }
             TokenKind::Or | TokenKind::OrOr => return self.parse_expr_closure(),
