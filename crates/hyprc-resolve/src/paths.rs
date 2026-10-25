@@ -244,7 +244,13 @@ impl Resolver<'_> {
             if i == 0 || (name == kw::Super && module.is_some()) {
                 let handled = match name {
                     kw::PathRoot => {
-                        if self.edition_of(scope).at_least_2018() {
+                        // In Rust 2015 a source-written `::name` starts at this crate's root.
+                        // Compiler-generated paths such as a built-in derive's `::core`, however,
+                        // carry expansion hygiene and name an extern crate just as they do in
+                        // newer editions.
+                        if self.edition_of(scope).at_least_2018()
+                            || next_path_segment_is_from_expansion(path)
+                        {
                             // `::crate_name::…`
                             let Some(next) = path.get(1) else {
                                 return PathResult::Failed {
@@ -395,4 +401,9 @@ impl Resolver<'_> {
             _ => None,
         }
     }
+}
+
+fn next_path_segment_is_from_expansion(path: &[Ident]) -> bool {
+    path.get(1)
+        .is_some_and(|segment| segment.span.ctxt != SyntaxContext::ROOT)
 }
