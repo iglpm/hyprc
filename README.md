@@ -20,7 +20,7 @@ When running `cargo build` in debug mode, time is lost in two bottlenecks:
   - Parallel file discovery and parsing across all available cores using `rayon`.
   - Arena-allocated HIR (`ExprId`, `PatId`) with desugared control flow (`for`, `while let`, `?`, `async`).
   - Fast unification-based type checking and trait solver with eager projection normalization.
-- **Zero borrow-checking overhead on the build path**: Borrow checking enforces safety invariants but doesn't change generated machine code. `hyprc` validates types, shapes, and trait bounds. Full borrow analysis runs in `igl check`. If your code compiles with `hyprc`, it runs.
+- **Zero borrow-checking overhead on the build path**: Borrow checking enforces safety invariants but doesn't change generated machine code. `hyprc` validates types, shapes, trait bounds, and unsafe operations. Full borrow analysis runs in `igl check`; Igel must only run a `hyprc` artifact after the same source fingerprint has passed that check.
 
 ## Performance Snapshot
 

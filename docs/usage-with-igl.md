@@ -23,7 +23,7 @@ hyprc \
 ```
 
 ### Key Differences from `rustc`:
-- **Borrow checking**: `hyprc` does not run the borrow checker during debug builds. Types, traits, sizes, and layout invariants are strictly checked, but lifetime verification is deferred to `igl check` and CI.
+- **Borrow checking**: `hyprc` does not run the borrow checker during debug builds. Types, traits, sizes, layout invariants, and unsafe operations are checked, while lifetime verification is deferred to `igl check`. Igel must only run an artifact whose exact source fingerprint has passed that rustc-backed check.
 - **Backend**: `hyprc` does not invoke LLVM. It converts MIR directly into x86-64 machine instructions and ELF objects in a single pass.
 - **Linking**: For binaries, `hyprc` invokes `hyprlnk` (or `cc` as fallback) to produce native Linux ELF executables. For libraries (`--crate-type=lib` or `rlib`), it writes the `.rlib` archive / object directly without attempting to link a `main` entrypoint.
 

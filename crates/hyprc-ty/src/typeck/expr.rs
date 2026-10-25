@@ -350,6 +350,7 @@ impl<'a, 'h> FnCtxt<'a, 'h> {
                 }
             }
             ExprKind::InlineAsm(asm) => {
+                self.require_unsafe(span, "use of inline assembly");
                 if asm
                     .tokens
                     .tokens()
