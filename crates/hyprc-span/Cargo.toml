@@ -1,0 +1,12 @@
+[package]
+name = "hyprc-span"
+description = "Source files, spans, interned symbols and diagnostics for hyprc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hashbrown.workspace = true
+rustc-hash.workspace = true

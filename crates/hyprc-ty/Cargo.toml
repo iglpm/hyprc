@@ -1,0 +1,16 @@
+[package]
+name = "hyprc-ty"
+description = "Types, trait solving and type checking for hyprc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+hyprc-syntax = { path = "../hyprc-syntax" }
+hyprc-hir = { path = "../hyprc-hir" }
+rayon.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true

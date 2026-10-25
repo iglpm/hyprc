@@ -1,0 +1,16 @@
+[package]
+name = "hyprc-codegen"
+description = "Machine code generation for hyprc: x86-64 from MIR, ELF objects, linking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+hyprc-hir = { path = "../hyprc-hir" }
+hyprc-ty = { path = "../hyprc-ty" }
+hyprc-mir = { path = "../hyprc-mir" }
+rayon.workspace = true
+rustc-hash.workspace = true

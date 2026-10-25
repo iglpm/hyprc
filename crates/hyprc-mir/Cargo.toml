@@ -1,0 +1,15 @@
+[package]
+name = "hyprc-mir"
+description = "MIR, layouts and monomorphization for hyprc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+hyprc-syntax = { path = "../hyprc-syntax" }
+hyprc-hir = { path = "../hyprc-hir" }
+hyprc-ty = { path = "../hyprc-ty" }
+rayon.workspace = true

@@ -1,0 +1,62 @@
+[package]
+name = "hyprc"
+description = "A fast Rust compiler for the Igel build system: its own frontend and a machine-code backend built for build speed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["compiler", "rust", "igl"]
+categories = ["compilers", "development-tools::build-utils"]
+default-run = "hyprc"
+
+[lib]
+name = "hyprc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hyprc"
+path = "src/main.rs"
+
+[dependencies]
+hyprc-span = { path = "crates/hyprc-span" }
+hyprc-syntax = { path = "crates/hyprc-syntax" }
+hyprc-resolve = { path = "crates/hyprc-resolve" }
+hyprc-hir = { path = "crates/hyprc-hir" }
+hyprc-ty = { path = "crates/hyprc-ty" }
+hyprc-mir = { path = "crates/hyprc-mir" }
+hyprc-codegen = { path = "crates/hyprc-codegen" }
+rayon.workspace = true
+mimalloc.workspace = true
+
+[workspace]
+resolver = "2"
+members = [".", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.89"
+repository = "https://github.com/runepm/hyprc"
+homepage = "https://runepm.com"
+
+[workspace.dependencies]
+rayon = "1"
+mimalloc = { version = "0.1", default-features = false }
+rustc-hash = "2"
+hashbrown = { version = "0.17", default-features = false, features = ["inline-more", "default-hasher"] }
+unicode-ident = "1"
+memchr = "2"
+smallvec = { version = "1", features = ["union", "const_generics"] }
+
+[profile.release]
+debug = "line-tables-only"
+codegen-units = 16
+panic = "abort"
+
+[profile.dev]
+# The parser recurses deeply on nested expressions; keep debug builds usable on real code.
+opt-level = 1

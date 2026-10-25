@@ -1,0 +1,13 @@
+[package]
+name = "hyprc-resolve"
+description = "Module loading, cfg, macro expansion and name resolution for hyprc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+hyprc-syntax = { path = "../hyprc-syntax" }
+rayon.workspace = true

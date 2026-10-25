@@ -1,0 +1,14 @@
+[package]
+name = "hyprc-hir"
+description = "The high-level IR of hyprc: lowered, desugared, names resolved"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+hyprc-syntax = { path = "../hyprc-syntax" }
+hyprc-resolve = { path = "../hyprc-resolve" }
+rayon.workspace = true

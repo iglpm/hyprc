@@ -1,0 +1,13 @@
+[package]
+name = "hyprc-syntax"
+description = "Lexer, syntax tree and parser for hyprc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+hyprc-span = { path = "../hyprc-span" }
+unicode-ident.workspace = true
+memchr.workspace = true
